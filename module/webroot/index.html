@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- APatch delivers native callbacks through javascript: URLs. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light dark">
+  <title>F60 管理</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand">
+        <img src="fingerprint.svg" width="32" height="32" alt="">
+        <div><h1>F60 管理</h1><p>小米 8 探索版</p></div>
+      </div>
+      <button id="refresh" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态">
+        <img src="refresh-cw.svg" width="20" height="20" alt="">
+      </button>
+    </header>
+
+    <section class="status-band" data-tone="neutral" aria-live="polite" aria-busy="true" id="status-band">
+      <div class="status-label"><span class="dot"></span>当前状态</div>
+      <h2 id="status-title">正在读取设备状态</h2>
+      <p id="status-description">等待 Root 管理器响应。</p>
+      <div class="states">
+        <span>Boot 修复 <strong id="disk-status">读取中</strong></span>
+        <span>压力驱动 <strong id="driver-status">读取中</strong></span>
+      </div>
+    </section>
+
+    <section class="actions" aria-label="修复管理">
+      <button id="install" class="primary" type="button" disabled>安装修复</button>
+      <button id="uninstall" class="danger" type="button" disabled>卸载修复</button>
+      <p>操作会写入 boot 分区。卸载修复将恢复安装前备份，保留管理页面。</p>
+    </section>
+
+    <p id="notice" class="notice" role="status" hidden></p>
+
+    <section class="device-info" aria-labelledby="device-title">
+      <h2 id="device-title">设备信息</h2>
+      <dl>
+        <div><dt>系统</dt><dd id="rom">—</dd></div>
+        <div><dt>Root</dt><dd id="root">—</dd></div>
+        <div><dt>运行内核</dt><dd id="kernel">—</dd></div>
+        <div><dt>模块版本</dt><dd id="version">—</dd></div>
+        <div class="wide"><dt>安装前备份</dt><dd id="backup">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="logs" aria-labelledby="log-title">
+      <h2 id="log-title">操作日志</h2>
+      <pre id="log" tabindex="0" aria-label="操作日志">暂无操作记录。</pre>
+    </section>
+    <footer>Ursa NDT F60 · 实验版本</footer>
+  </main>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-description"></p>
+    <div class="dialog-actions">
+      <button id="cancel" type="button">取消</button>
+      <button id="confirm" class="primary" type="button">确认</button>
+    </div>
+  </dialog>
+</body>
+</html>

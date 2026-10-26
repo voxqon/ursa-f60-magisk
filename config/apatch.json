@@ -1,0 +1,14 @@
+{
+  "name": "11282",
+  "code": "11282",
+  "kernelpatch_version": "0.13.9",
+  "kernelpatch_revision": "b51197aaba8f2272dd8a3e30c85698a29aa928c9",
+  "kptools": {
+    "url": "https://github.com/bmax121/KernelPatch/releases/download/0.13.9/kptools-android",
+    "sha256": "63a8656a79b74baadcf0ce57a7e89a8c8a94beb35b25df58aec0bcf1d066bc5b"
+  },
+  "kpimg": {
+    "url": "https://github.com/bmax121/KernelPatch/releases/download/0.13.9/kpimg-android",
+    "sha256": "eb2e3d16fe69410150efcf6f9425baf8cad9ac0c39f051fc8b40ce57c7143adb"
+  }
+}

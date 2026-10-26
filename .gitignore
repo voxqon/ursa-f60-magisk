@@ -1,0 +1,17 @@
+/inputs/
+/out/
+/dist/
+/module/payload/
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*.partial
+*.img
+*.apk
+*.zip
+*.tar.gz
+*.gz-dtb
+.venv/
+.DS_Store
+Thumbs.db
