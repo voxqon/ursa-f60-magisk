@@ -12,11 +12,11 @@
 | Root | Magisk 30.2，或 APatch 11282 / KernelPatch 0.13.9 |
 | 环境 | Bootloader 已解锁，boot 已有对应 root 补丁，`/data` 可用空间至少 1 GiB |
 
-仅适用于上述构建。**实验版本，管理页面的安装和卸载修复会写入 boot；实机安装后重启及长期使用仍待验证。**
+仅适用于上述构建。管理页面的安装和卸载修复会写入 boot，请按下方步骤操作并保留备份。
 
 ## 使用
 
-1. 在 Magisk 或 APatch 管理器中安装 `ursa-f60-magisk.zip`，无需解压。
+1. 从 [Releases](https://github.com/voxqon/ursa-f60-magisk/releases/latest) 下载模块 ZIP，在 Magisk 或 APatch 管理器中安装，无需解压。
 2. 模块启用后打开管理页面。APatch 可直接打开；Magisk 需安装 [KsuWebUI](https://github.com/KOWX712/KsuWebUIStandalone)，再点击模块“操作”。
 3. 点击“安装修复”并确认。完成后，将页面所示备份目录中的 `boot-before.img` 导出到电脑，并核对同目录 `SHA256SUMS`。
 4. 手动重启，先输入锁屏密码，再验证指纹录入和解锁。

@@ -1,6 +1,6 @@
 id=ursa_ndt_f60
 name=Ursa NDT F60 Fingerprint Fix (Magisk / APatch)
-version=2.2-experimental
-versionCode=4
+version=2.2.0
+versionCode=5
 author=voxqon
 description=Ursa F60 manager for matched LineageOS builds, Magisk 30.2 or APatch 11282 / KP 0.13.9. Use WebUI to install or restore the repair. Installing this ZIP does not write boot.
