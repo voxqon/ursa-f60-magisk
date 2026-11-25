@@ -8,7 +8,7 @@ let selectedAction = null;
 let callbackId = 0;
 
 function execute(action) {
-  if (!["status", "log", "install", "uninstall"].includes(action)) {
+  if (!["status", "log", "install", "uninstall", "auto-on", "auto-off"].includes(action)) {
     return Promise.reject(new Error("无效操作。"));
   }
   if (!window.ksu || typeof window.ksu.exec !== "function") {
@@ -16,7 +16,7 @@ function execute(action) {
   }
   return new Promise((resolve, reject) => {
     const callback = `f60Callback${++callbackId}`;
-    const mutation = action === "install" || action === "uninstall";
+    const mutation = action !== "status" && action !== "log";
     let timer;
     const cleanup = () => {
       clearTimeout(timer);
@@ -52,9 +52,9 @@ function decodeFields(output) {
     const bytes = Uint8Array.from(atob(line.slice(separator + 1)), (value) => value.charCodeAt(0));
     result[key] = new TextDecoder().decode(bytes);
   }
-  if (result.protocol !== "1" ||
-      !["supported", "ready", "busy", "running", "driver"].every((key) => ["0", "1"].includes(result[key])) ||
-      !["unknown", "fixed", "restored", "changed"].includes(result.disk)) {
+  if (result.protocol !== "2" ||
+      !["supported", "ready", "busy", "running", "driver", "auto", "adaptive"].every((key) => ["0", "1"].includes(result[key])) ||
+      !["unknown", "fixed", "stock", "restored", "changed"].includes(result.disk)) {
     throw new Error("设备返回的状态不完整，请刷新重试。");
   }
   return result;
@@ -69,8 +69,18 @@ function notice(message, error = false) {
 function buttons() {
   const available = !working && state?.supported === "1" && state?.ready === "1" && state?.busy === "0";
   $("refresh").disabled = working;
-  $("install").disabled = !available || state?.disk === "changed" || state?.disk === "fixed";
+  $("install").disabled = !available || state?.disk === "fixed";
   $("uninstall").disabled = !available || state?.disk !== "fixed" || !state?.backup;
+  const autoEnabled = state?.auto === "1";
+  const canShowAuto = state?.root === "APatch" || autoEnabled;
+  $("auto-on").hidden = !canShowAuto || autoEnabled;
+  $("auto-on").disabled = !available || state?.root !== "APatch";
+  $("auto-off").hidden = !canShowAuto || !autoEnabled;
+  $("auto-off").disabled = working || state?.busy === "1";
+  $("auto-status").hidden = !canShowAuto;
+  $("auto-status").textContent = autoEnabled
+    ? "已开启。OTA 后进入支持的系统且保有 APatch 时，模块会尝试补回修复；完成后请手动重启。"
+    : "默认关闭。开启后，模块可在 OTA 后为匹配的 boot 自动备份并补回修复。";
 }
 
 function render() {
@@ -84,7 +94,7 @@ function render() {
   } else if (state.busy === "1") {
     title = "操作进行中"; description = "正在处理 boot，完成后请刷新状态。"; tone = "warning";
   } else if (state.disk === "changed") {
-    title = "Boot 已发生变化"; description = "当前 boot 与安装记录不一致，已禁用写入。"; tone = "error";
+    title = "Boot 已发生变化"; description = "旧备份不可恢复。可重新安装修复，模块会先校验并备份当前 boot。"; tone = "warning";
   } else if (state.disk === "fixed") {
     if (state.running !== "1") {
       title = "已安装，等待重启"; description = "先将安装前备份导出到电脑，再手动重启。"; tone = "warning";
@@ -101,12 +111,15 @@ function render() {
     }
   } else if (state.running === "1" && state.driver === "1") {
     title = "压力驱动正在运行"; description = "没有匹配的安装备份，无法从此页面卸载修复。"; tone = "warning";
+  } else if (state.adaptive === "1") {
+    title = "等待校验 Boot";
+    description = "当前构建没有专用配置。安装时会校验实际 boot，通过后才备份并写入修复。";
   }
   $("status-title").textContent = title;
   $("status-description").textContent = description;
   $("status-band").dataset.tone = tone;
   $("status-band").setAttribute("aria-busy", state.busy === "1" ? "true" : "false");
-  $("disk-status").textContent = { fixed: "已安装", restored: "已恢复", changed: "与记录不一致", unknown: "未记录" }[state.disk];
+  $("disk-status").textContent = { fixed: "已安装", stock: "与修复前一致", restored: "已恢复", changed: "与记录不一致", unknown: "未记录" }[state.disk];
   $("driver-status").textContent = state.driver === "1" ? "已绑定" : "未检测到";
   for (const id of ["rom", "root", "kernel", "version"]) $(id).textContent = state[id] || "—";
   $("backup").textContent = state.backup || "暂无匹配的安装前备份";
@@ -147,13 +160,16 @@ async function refresh() {
 function confirmAction(action) {
   if (working || $(action).disabled) return;
   selectedAction = action;
-  const install = action === "install";
-  $("confirm-title").textContent = install ? "安装 F60 修复？" : "卸载 F60 修复？";
-  $("confirm-description").textContent = install
-    ? "将备份当前 boot 并写入匹配的修复内核。完成后请导出备份，再手动重启。"
-    : "将校验并恢复本次安装前的 boot，保留管理页面和备份。完成后需要手动重启。";
-  $("confirm").textContent = install ? "确认安装" : "确认卸载";
-  $("confirm").className = install ? "primary" : "danger";
+  const details = {
+    install: ["安装 F60 修复？", "将备份当前 boot 并写入匹配的修复内核。完成后请导出备份，再手动重启。", "确认安装"],
+    uninstall: ["卸载 F60 修复？", "将关闭自动恢复并校验、恢复安装前的 boot。完成后需要手动重启。", "确认卸载"],
+    "auto-on": ["开启 OTA 后自动恢复？", "OTA 后进入支持的系统且保有 APatch 时，模块会自动备份并写入匹配的 boot。完成后请手动重启。", "确认开启"],
+    "auto-off": ["关闭 OTA 后自动恢复？", "关闭后可继续手动安装或卸载修复。", "确认关闭"],
+  }[action];
+  $("confirm-title").textContent = details[0];
+  $("confirm-description").textContent = details[1];
+  $("confirm").textContent = details[2];
+  $("confirm").className = action === "uninstall" ? "danger" : "primary";
   $("confirm-dialog").showModal();
   $("cancel").focus();
 }
@@ -166,14 +182,18 @@ async function runOperation() {
   working = true;
   buttons();
   $("status-band").setAttribute("aria-busy", "true");
-  $("status-title").textContent = action === "install" ? "正在安装修复" : "正在恢复安装前备份";
-  $("status-description").textContent = "请保持页面打开，等待写入和回读校验完成。";
+  const setting = action === "auto-on" || action === "auto-off";
+  $("status-title").textContent = setting ? "正在保存设置" : action === "install" ? "正在安装修复" : "正在恢复安装前备份";
+  $("status-description").textContent = setting ? "请稍候。" : "请保持页面打开，等待写入和回读校验完成。";
   notice("");
   $("log").textContent = "操作正在执行…";
   try {
     const result = await execute(action);
     $("log").textContent = [result.stdout, result.stderr].filter(Boolean).join("\n") || "操作未返回日志。";
-    if (result.code !== 0) {
+    if (setting) {
+      notice(result.code !== 0 ? (result.stderr || result.stdout || "设置保存失败。")
+        : action === "auto-on" ? "已开启 OTA 后自动恢复。" : "已关闭 OTA 后自动恢复。", result.code !== 0);
+    } else if (result.code !== 0) {
       notice("操作未完成。请检查下方日志；出现 RECOVERY-REQUIRED 时请先恢复备份，不要重启。", true);
     } else {
       notice(action === "install"
@@ -191,6 +211,8 @@ async function runOperation() {
 $("refresh").addEventListener("click", refresh);
 $("install").addEventListener("click", () => confirmAction("install"));
 $("uninstall").addEventListener("click", () => confirmAction("uninstall"));
+$("auto-on").addEventListener("click", () => confirmAction("auto-on"));
+$("auto-off").addEventListener("click", () => confirmAction("auto-off"));
 $("cancel").addEventListener("click", () => { selectedAction = null; $("confirm-dialog").close(); });
 $("confirm").addEventListener("click", runOperation);
 $("confirm-dialog").addEventListener("cancel", () => { selectedAction = null; });

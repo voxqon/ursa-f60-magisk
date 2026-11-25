@@ -6,8 +6,10 @@ F60_MODULE=${MODPATH:-${0%/*}}
 F60_PAYLOAD_ROOT=$F60_MODULE/payload
 F60_PAYLOAD=$F60_PAYLOAD_ROOT
 . "$F60_MODULE/apatch.sh"
+. "$F60_MODULE/family.sh"
 
 f60_error() { echo "ERROR: $*" >&2; return 1; }
+f60_module_enabled() { [ ! -e "$F60_MODULE/remove" ] && [ ! -e "$F60_MODULE/disable" ]; }
 f60_hash() { sha256sum "$1" | awk '{print $1}'; }
 f60_size() { stat -c %s "$1"; }
 f60_range() {
@@ -54,6 +56,7 @@ f60_load() {
 }
 
 f60_select_profile() {
+  F60_FAMILY=0
   current_version=$(getprop ro.lineage.version)
   current_incremental=$(getprop ro.build.version.incremental)
   current_sdk=$(getprop ro.build.version.sdk)
@@ -72,13 +75,22 @@ f60_select_profile() {
       selected=$profile
     fi
   done
-  [ -n "$selected" ] || {
-    f60_error "No matching kernel payload for $current_version / $current_incremental."
-    f60_error "A matching ROM boot image, source revision and rebuilt kernel must be added first."
-    return 1
-  }
-  F60_PAYLOAD=$selected
-  . "$F60_PAYLOAD/manifest.env"
+  if [ -n "$selected" ]; then
+    F60_PAYLOAD=$selected
+    . "$F60_PAYLOAD/manifest.env" || return 1
+  else
+    [ -f "$F60_PAYLOAD_ROOT/family.env" ] ||
+      { f60_error "No compatible profile or kernel family for $current_version."; return 1; }
+    . "$F60_PAYLOAD_ROOT/family.env" || return 1
+    case "$current_version" in *-ursa) ;; *) return 1 ;; esac
+    case "$current_incremental" in ''|*[!a-zA-Z0-9._-]*) return 1 ;; esac
+    [ "$current_sdk" = "$TARGET_SDK" ] ||
+      { f60_error "No verified kernel family for Android SDK $current_sdk."; return 1; }
+    TARGET_VERSION=$current_version
+    TARGET_INCREMENTAL=$current_incremental
+    F60_FAMILY=1
+  fi
+  F60_FIXED_KERNEL=$F60_PAYLOAD_ROOT/kernels/$KERNEL_ID
 }
 
 f60_environment() {
@@ -119,7 +131,8 @@ f60_environment() {
   [ "$(blockdev --getsize64 "$F60_BOOT")" = "$IMAGE_SIZE" ] ||
     { f60_error "Unexpected boot partition or size."; return 1; }
   [ ! -e /dev/block/bootdevice/by-name/init_boot ] &&
-  [ ! -e /dev/block/bootdevice/by-name/boot_a ] ||
+  [ ! -e /dev/block/bootdevice/by-name/boot_a ] &&
+  [ ! -e /dev/block/bootdevice/by-name/boot_b ] ||
     { f60_error "Unexpected boot partition layout."; return 1; }
 }
 
@@ -130,8 +143,11 @@ f60_header() {
   f60_zero "$2/header.mask" 8 4 &&
   f60_zero "$2/header.mask" 16 4 &&
   f60_zero "$2/header.mask" 576 32 || return 1
-  [ "$(f60_hash "$2/header.mask")" = "$HEADER_MASK_SHA" ] ||
-    { f60_error "Unknown boot header, cmdline or layout."; return 1; }
+  if [ "$F60_FAMILY" = 1 ]; then
+    f60_family_header "$2"
+  else
+    [ "$(f60_hash "$2/header.mask")" = "$HEADER_MASK_SHA" ]
+  fi || { f60_error "Unknown boot header, cmdline or layout."; return 1; }
   F60_KSIZE=$(f60_le32 "$1" 8) || return 1
   F60_RSIZE=$(f60_le32 "$1" 16) || return 1
   [ "$F60_KSIZE" -ge 10000000 ] && [ "$F60_KSIZE" -le 40000000 ] &&
@@ -157,12 +173,16 @@ f60_metadata() {
   f60_zero "$2/vbmeta.mask" 120 4 &&
   f60_zero "$2/vbmeta.mask" "$HASH_SIZE_OFFSET" 8 &&
   f60_zero "$2/vbmeta.mask" "$HASH_DIGEST_OFFSET" 32 || return 1
-  [ "$(f60_hash "$2/vbmeta.mask")" = "$VBMETA_MASK_SHA" ] ||
-    { f60_error "Unknown AVB algorithm or metadata."; return 1; }
+  if [ "$F60_FAMILY" = 1 ]; then
+    f60_family_metadata "$2"
+  else
+    [ "$(f60_hash "$2/vbmeta.mask")" = "$VBMETA_MASK_SHA" ] &&
+    cp "$F60_PAYLOAD/salt" "$2/salt"
+  fi || { f60_error "Unknown AVB algorithm or metadata."; return 1; }
   if [ "$3" = strict ]; then
     [ "$(f60_uint "$2/vbmeta" "$HASH_SIZE_OFFSET" 8)" = "$F60_END" ] || return 1
     # Use a file to make a failed range read visible, instead of a hidden pipe error.
-    cat "$F60_PAYLOAD/salt" > "$2/hash-input" &&
+    cat "$2/salt" > "$2/hash-input" &&
     f60_range "$1" 0 "$F60_END" >> "$2/hash-input" || return 1
     digest=$(f60_hash "$2/hash-input") || return 1
     actual=$(od -An -v -tx1 -j "$HASH_DIGEST_OFFSET" -N 32 "$2/vbmeta" |
@@ -205,8 +225,8 @@ f60_components() {
     { f60_error "Unknown bytes in boot padding."; return 1; }
   f60_range "$1" 4096 "$F60_KSIZE" > "$2/kernel.raw" &&
   f60_range "$1" "$F60_ROFF" "$F60_RSIZE" > "$2/ramdisk.raw" || return 1
-  kernel_sha=$(f60_hash "$2/kernel.raw")
-  if [ "${F60_ROOT:-magisk}" != apatch ]; then
+  if [ "$F60_ROOT" = magisk ] && [ "$F60_FAMILY" = 0 ]; then
+    kernel_sha=$(f60_hash "$2/kernel.raw")
     case "$kernel_sha" in
     "$STOCK_KERNEL_SHA") F60_KERNEL_STATE=stock ;;
     "$FIXED_KERNEL_SHA") F60_KERNEL_STATE=fixed ;;
@@ -234,12 +254,23 @@ f60_components() {
   fi
   mkdir "$2/unpack" || return 1
   (cd "$2/unpack" && "$F60_MB" unpack -n "$1") || return 1
-  [ "$(f60_hash "$2/unpack/kernel_dtb")" = "$DTB_SHA" ] || return 1
+  if [ "$F60_FAMILY" = 1 ]; then
+    f60_family_dtbs "$2"
+  else
+    [ "$(f60_hash "$2/unpack/kernel_dtb")" = "$DTB_SHA" ]
+  fi || { f60_error "Unknown appended device trees."; return 1; }
   if [ "${F60_ROOT:-magisk}" = apatch ]; then
-    [ "$(f60_hash "$2/ramdisk.raw")" = "$STOCK_RAMDISK_SHA" ] ||
-      { f60_error "APatch requires the unmodified target ROM ramdisk."; return 1; }
+    if [ "$F60_FAMILY" = 1 ]; then
+      f60_hash_in_set "$(f60_hash "$2/ramdisk.raw")" "$FAMILY_RAMDISKS"
+    else
+      [ "$(f60_hash "$2/ramdisk.raw")" = "$STOCK_RAMDISK_SHA" ]
+    fi || { f60_error "APatch requires a verified unmodified ROM ramdisk."; return 1; }
     f60_apatch_kernel "$2"
     return "$?"
+  fi
+  if [ "$F60_FAMILY" = 1 ]; then
+    "$F60_MB" decompress "$2/unpack/kernel" "$2/kernel.base" &&
+    f60_classify_base "$2" || return 1
   fi
   # Only a Magisk-patched partition ramdisk is accepted, even on a temporary boot.
   "$F60_MB" decompress "$2/ramdisk.raw" "$2/ramdisk.cpio" || return 1
@@ -249,8 +280,23 @@ f60_components() {
   # Work on a copy. Never change the ramdisk that will be written to boot.
   cp "$2/ramdisk.cpio" "$2/restored.cpio" &&
   "$F60_MB" cpio "$2/restored.cpio" restore || return 1
-  [ "$(f60_hash "$2/restored.cpio")" = "$STOCK_CPIO_CANONICAL_SHA" ] ||
-    { f60_error "Ramdisk contains changes beyond the expected Magisk patch."; return 1; }
+  if [ "$F60_FAMILY" = 1 ]; then
+    f60_hash_in_set "$(f60_hash "$2/restored.cpio")" "$FAMILY_CPIOS"
+  else
+    [ "$(f60_hash "$2/restored.cpio")" = "$STOCK_CPIO_CANONICAL_SHA" ]
+  fi || { f60_error "Ramdisk contains changes beyond the expected Magisk patch."; return 1; }
+}
+
+f60_classify_base() {
+  case "$(f60_hash "$1/kernel.base")" in
+    "$FIXED_PLAIN_SHA") F60_KERNEL_STATE=fixed; return 0 ;;
+    "$STOCK_PLAIN_SHA") F60_KERNEL_STATE=stock; return 0 ;;
+  esac
+  if [ "$F60_FAMILY" = 1 ] && f60_family_stock "$1"; then
+    F60_KERNEL_STATE=stock
+    return 0
+  fi
+  f60_error "Unknown base kernel; no boot writes performed."
 }
 
 f60_finalize_avb() {
@@ -258,7 +304,7 @@ f60_finalize_avb() {
   # Preserve the validated current vbmeta and its flags, replacing size and digest.
   cp "$3/vbmeta" "$2/vbmeta" &&
   f60_be64_write "$2/vbmeta" "$HASH_SIZE_OFFSET" "$F60_END" || return 1
-  cat "$F60_PAYLOAD/salt" > "$2/hash-input" &&
+  cat "$3/salt" > "$2/hash-input" &&
   f60_range "$1" 0 "$F60_END" >> "$2/hash-input" || return 1
   digest=$(f60_hash "$2/hash-input") || return 1
   printf '%s' "$digest" | xxd -r -p > "$2/digest"
@@ -370,7 +416,7 @@ f60_build_candidate() {
   if [ "${F60_ROOT:-magisk}" = apatch ]; then
     f60_apatch_rebase "$F60_WORK/before" || return 1
   else
-    cp "$F60_PAYLOAD/kernel" "$F60_WORK/before/unpack/kernel" || return 1
+    cp "$F60_FIXED_KERNEL" "$F60_WORK/before/unpack/kernel" || return 1
   fi
   (cd "$F60_WORK/before/unpack" &&
     PATCHVBMETAFLAG=false "$F60_MB" repack -n "$F60_WORK/before.img" "$F60_WORK/patched.img") ||
@@ -381,8 +427,13 @@ f60_build_candidate() {
   cmp -s "$F60_WORK/before/ramdisk.raw" "$F60_WORK/after/ramdisk.raw" &&
   cmp -s "$F60_WORK/before/unpack/kernel_dtb" "$F60_WORK/after/unpack/kernel_dtb" &&
   cmp -s "$F60_WORK/before/header.mask" "$F60_WORK/after/header.mask" &&
+  cmp -s "$F60_WORK/before/salt" "$F60_WORK/after/salt" &&
   [ "$(f60_uint "$F60_WORK/before/vbmeta" 120 4)" = "$(f60_uint "$F60_WORK/after/vbmeta" 120 4)" ] ||
     { f60_error "Repacked image invariants failed."; return 1; }
+  if [ "$F60_FAMILY" = 1 ]; then
+    cmp -s "$F60_WORK/before/fingerprint" "$F60_WORK/after/fingerprint" ||
+      { f60_error "Boot fingerprint changed."; return 1; }
+  fi
   if [ "${F60_ROOT:-magisk}" = apatch ]; then
     f60_apatch_settings_equal "$F60_WORK/before" "$F60_WORK/after" ||
       { f60_error "APatch credentials or settings changed."; return 1; }
@@ -397,21 +448,21 @@ f60_install_body() {
   cp "$F60_WORK/patched.img" "$F60_BACKUP/boot-after.img" &&
   (cd "$F60_BACKUP" && sha256sum boot-after.img >> SHA256SUMS) &&
   sync || return 1
+  f60_module_enabled || { f60_error "Module was disabled or marked for removal. Nothing written."; return 1; }
   f60_write_verified "$F60_BACKUP/boot-after.img" "$F60_BACKUP/boot-before.img" || return 1
-  printf '%s\n' "$F60_BACKUP" > "$F60_STATE/latest-backup"
+  printf '%s\n' "$F60_BACKUP" > "$F60_STATE/latest-backup" || return 1
+  echo "Repair written and read back. Backup: $F60_BACKUP"
 }
 
 f60_install() {
-  mkdir -p "$F60_STATE" && chmod 700 "$F60_STATE" || return 1
-  if ! f60_prepare > "$F60_STATE/install.log" 2>&1; then
-    cat "$F60_STATE/install.log"
-    return 1
+  f60_prepare || return 1
+  if [ "$1" = auto ] && { [ "$F60_ROOT" != apatch ] || ! f60_module_enabled ||
+    [ ! -f "$F60_STATE/auto-repair" ] || f60_running_fix; }; then
+    f60_cleanup
+    return 0
   fi
-  # Tee is avoided here so ash preserves the install body's exit status.
-  echo "Preparing whitelisted boot repair..."
-  f60_install_body >> "$F60_STATE/install.log" 2>&1
+  f60_install_body
   result=$?
-  cat "$F60_STATE/install.log"
   f60_cleanup
   return "$result"
 }
@@ -421,9 +472,9 @@ f60_restore_body() {
   case "$F60_BACKUP" in "$F60_STATE"/backup-*) ;; *) return 1 ;; esac
   [ "$(readlink -f "$F60_BACKUP")" = "$F60_BACKUP" ] || return 1
   (cd "$F60_BACKUP" && sha256sum -c SHA256SUMS) || return 1
-  grep -qx "lineage=$TARGET_VERSION" "$F60_BACKUP/device.txt" &&
-  grep -qx "incremental=$TARGET_INCREMENTAL" "$F60_BACKUP/device.txt" &&
-  grep -qx "partition=$F60_BOOT" "$F60_BACKUP/device.txt" || return 1
+  grep -Fxq "lineage=$TARGET_VERSION" "$F60_BACKUP/device.txt" &&
+  grep -Fxq "incremental=$TARGET_INCREMENTAL" "$F60_BACKUP/device.txt" &&
+  grep -Fxq "partition=$F60_BOOT" "$F60_BACKUP/device.txt" || return 1
   mkdir "$F60_WORK/original" "$F60_WORK/current" || return 1
   f60_components "$F60_BACKUP/boot-before.img" "$F60_WORK/original" relaxed || return 1
   f60_read_boot "$F60_WORK/before.img" || return 1
@@ -444,11 +495,24 @@ f60_restore() {
   [ "$1" = --restore ] && [ -n "$2" ] ||
     { f60_error "Usage: sh restore.sh --restore /data/adb/ursa_ndt_f60/backup-..."; return 1; }
   f60_prepare || return 1
+  # Do this under the boot lock, including restores started outside WebUI.
+  if ! rm -f "$F60_STATE/auto-repair"; then
+    f60_cleanup
+    return 1
+  fi
   f60_restore_body "$2" > "$F60_STATE/restore.log" 2>&1
   result=$?
   cat "$F60_STATE/restore.log"
   f60_cleanup
   return "$result"
+}
+
+f60_driver_bound() {
+  [ "$(readlink -f /sys/bus/i2c/devices/3-0050/driver)" = /sys/bus/i2c/drivers/ndt_press_f60 ]
+}
+
+f60_running_fix() {
+  [ "$(uname -r)" = "$FIXED_RELEASE" ] || f60_driver_bound
 }
 
 f60_status() {
@@ -460,7 +524,7 @@ f60_status() {
     echo "UNSUPPORTED ROM: no matching verified profile. No boot writes performed."
     return 1
   fi
-  echo "Matched profile: $TARGET_ID"
+  echo "Selected profile or kernel family: $TARGET_ID"
   [ "$(uname -r)" = "$FIXED_RELEASE" ] ||
     { echo "F60 kernel is not running. A temporary boot or pending reboot may explain this."; return 1; }
   driver=$(readlink -f /sys/bus/i2c/devices/3-0050/driver)

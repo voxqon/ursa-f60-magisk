@@ -1,0 +1,7 @@
+{
+  "target": "lineage-22.2-20261020-ursa",
+  "url": "https://github.com/voxqon/ursa-f60-magisk/releases/download/v2.2.0/ursa-f60-magisk-v2.2.0.zip",
+  "sha256": "431c783d556aabc1d21dbbe28f6c0c448ffbfb5039a804710e27751a88807ef2",
+  "revision": "aa8adfe9bf212c6e93238a86980b4024da4f819a",
+  "dtb_set_sha256": "bed675cbe1d47b05ca46b8cefa4800cec0bddc4c0c323f8b402472622589c1af"
+}

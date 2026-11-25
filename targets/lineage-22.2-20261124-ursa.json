@@ -1,0 +1,30 @@
+{
+  "id": "lineage-22.2-20261124-ursa",
+  "device": "ursa",
+  "lineage_version": "22.2-20261124-NIGHTLY-ursa",
+  "incremental": "fa062f23c3",
+  "sdk": 35,
+  "partition_size": 67108864,
+  "use_released_kernel": true,
+  "adaptive_family": "ursa-sdm845-aa8adfe9bf21",
+  "stock_boot": {
+    "file": "inputs/lineage-22.2-20261124-ursa/boot.img",
+    "url": "https://mirrorbits.lineageos.org/full/ursa/20261124/boot.img",
+    "sha256": "de166525e686075027f37ed83417d0f32ad5f94a95e153dda033b1a095848901",
+    "canonical_cpio_sha256": "6e88184e2b28a16bc9b0b5a3be63f0623e25418abfb397993a03a0dce4e67e6b"
+  },
+  "build_manifest": {
+    "url": "https://mirrorbits.lineageos.org/full/ursa/20261124/build-manifest.xml",
+    "sha256": "774a393ea5f5f7bf3ac31056e6543f6025225ac4755d1435b2e484a6e4fac634"
+  },
+  "kernel": {
+    "file": "inputs/lineage-22.2-20261124-ursa/Image.gz-dtb",
+    "repository": "https://github.com/LineageOS/android_kernel_xiaomi_sdm845.git",
+    "revision": "aa8adfe9bf212c6e93238a86980b4024da4f819a",
+    "stock_config": "configs/lineage-22.2-20261020-ursa.config"
+  },
+  "compiler": {
+    "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/96266255abde668f1bf100bf2c47363b96b7a21e/clang-r536225.tar.gz",
+    "sha256": "14d912aab742f4f64e01b80a64e5ffd6fb73011e82de8d6acb8c5aeb529eeb9a"
+  }
+}

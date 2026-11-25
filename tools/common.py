@@ -48,6 +48,13 @@ def spec(path):
             raise ValueError("SHA-256 pins are required")
         if not entry["url"].startswith("https://"):
             raise ValueError("Downloads require HTTPS")
+    canonical = target["stock_boot"].get("canonical_cpio_sha256")
+    if canonical is not None and not re.fullmatch(r"[0-9a-f]{64}", canonical):
+        raise ValueError("Invalid canonical ramdisk hash")
+    family = target.get("adaptive_family")
+    if family is not None and (not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,100}", family)
+                               or not target.get("use_released_kernel")):
+        raise ValueError("Adaptive families require a valid ID and a pinned released kernel")
     for name in (target["stock_boot"]["file"], target["kernel"]["file"],
                  target["kernel"]["stock_config"]):
         local_path(name)

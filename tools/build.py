@@ -1,6 +1,7 @@
 """Build a multi-profile module. All paths are relative to this repository."""
 
 import argparse
+import gzip
 import json
 import os
 import re
@@ -12,6 +13,17 @@ import zipfile
 from pathlib import Path
 
 from common import ROOT, avb_module, boot_parts, dtbs, fetch, kernel_config, local_path, sha, spec, split_kernel, verify_manifest
+from family import family_fields
+
+
+def released_kernel(download):
+    # Keep supporting the original build after its official images rotate off mirrors.
+    config = json.loads((ROOT / "config/f60-release.json").read_text(encoding="utf-8"))
+    archive_path = fetch(config, ROOT / "out/ursa-f60-magisk-v2.2.0.zip", download)
+    with zipfile.ZipFile(archive_path) as archive:
+        prefix = f"payload/profiles/{config['target']}/"
+        files = {name: archive.read(prefix + name) for name in ("kernel", "salt", "manifest.env")}
+    return config, files
 
 
 def run(*args, cwd=None):
@@ -56,7 +68,7 @@ def canonical_cpio(ramdisk, tools):
         return sha((temp / "ramdisk.cpio").read_bytes())
 
 
-def profile(target, tools, download):
+def profile(target, tools, download, release=None, family=False):
     verify_manifest(target, download)
     stock_path = fetch(target["stock_boot"], local_path(target["stock_boot"]["file"]), download)
     stock = stock_path.read_bytes()
@@ -65,10 +77,21 @@ def profile(target, tools, download):
     if os_major < 13 or target["sdk"] != os_major + 20:
         raise ValueError("Target SDK does not match the Android version in the boot header")
     stock_gz, original_dtb, stock_plain = split_kernel(raw_stock)
-    raw_fixed = local_path(target["kernel"]["file"]).read_bytes()
-    fixed_gz, rebuilt_dtb, fixed_plain = split_kernel(raw_fixed)
-    if dtbs(original_dtb) != dtbs(rebuilt_dtb):
-        raise ValueError(f"{target['id']}: rebuilt DTBs differ")
+    fixed_path = local_path(target["kernel"]["file"])
+    original_dtbs = dtbs(original_dtb)
+    if fixed_path.is_file():
+        fixed_gz, rebuilt_dtb, fixed_plain = split_kernel(fixed_path.read_bytes())
+        if original_dtbs != dtbs(rebuilt_dtb):
+            raise ValueError(f"{target['id']}: rebuilt DTBs differ")
+    elif release is not None:
+        config, files = release
+        if (target["kernel"]["revision"] != config["revision"] or
+                sha("".join(original_dtbs).encode("ascii")) != config["dtb_set_sha256"]):
+            raise ValueError(f"{target['id']}: released kernel does not match source or DTBs")
+        fixed_gz = files["kernel"]
+        fixed_plain = gzip.decompress(fixed_gz)
+    else:
+        raise FileNotFoundError(f"Missing {fixed_path}")
     config = kernel_config(stock_plain)
     if local_path(target["kernel"]["stock_config"]).read_text(encoding="utf-8") != config:
         raise ValueError("Pinned stock config differs from boot")
@@ -117,7 +140,8 @@ def profile(target, tools, download):
     run(sys.executable, ROOT / "third_party/avb/avbtool.py",
         "verify_image", "--image", stock_path)
     size_offset = offset + 16
-    digest_offset = offset + avb.AvbHashDescriptor.SIZE + 4 + 32
+    salt_offset = offset + avb.AvbHashDescriptor.SIZE + len(descriptor.partition_name.encode("utf-8"))
+    digest_offset = salt_offset + len(descriptor.salt)
     vbmeta = bytearray(stock[footer.vbmeta_offset:footer.vbmeta_offset + footer.vbmeta_size])
     for start, size in ((120, 4), (size_offset, 8), (digest_offset, 32)):
         vbmeta[start:start + size] = bytes(size)
@@ -131,7 +155,8 @@ def profile(target, tools, download):
         "TARGET_VERSION": target["lineage_version"],
         "TARGET_INCREMENTAL": target["incremental"],
         "TARGET_SDK": target["sdk"],
-        "STOCK_CPIO_CANONICAL_SHA": canonical_cpio(ramdisk, tools),
+        "STOCK_CPIO_CANONICAL_SHA": target["stock_boot"].get("canonical_cpio_sha256")
+        or canonical_cpio(ramdisk, tools),
         "IMAGE_SIZE": len(stock),
         "SOURCE_IMAGE_SIZE": len(stock),
         "PARTITION_SIZE": target["partition_size"],
@@ -151,11 +176,28 @@ def profile(target, tools, download):
         "DTB_SHA": sha(original_dtb),
         "FIXED_RELEASE": release,
     }
-    return {
+    files = {
         "kernel": fixed_gz,
         "salt": descriptor.salt,
         "manifest.env": env_file(manifest),
     }
+    if family and target.get("adaptive_family") and not fixed_path.is_file():
+        if len(fingerprints) != 1:
+            raise ValueError("Adaptive profiles require a single boot fingerprint")
+        fingerprint = fingerprints[0].encode("ascii")
+        source_vbmeta = stock[footer.vbmeta_offset:footer.vbmeta_offset + footer.vbmeta_size]
+        if (source_vbmeta.count(fingerprint) != 1 or source_vbmeta.count(descriptor.salt) != 1
+                or source_vbmeta[salt_offset:digest_offset] != descriptor.salt
+                or source_vbmeta[digest_offset:digest_offset + 32] != descriptor.digest):
+            raise ValueError("Cannot locate unique boot fingerprint, salt and digest")
+        adaptive = family_fields(original_dtb, stock_plain, stock[:4096], source_vbmeta,
+                                 fingerprint, source_vbmeta.index(fingerprint), salt_offset,
+                                 size_offset, digest_offset)
+        adaptive.update({key: manifest[key] for key in (
+            "SOURCE_IMAGE_SIZE", "PARTITION_SIZE", "STOCK_PLAIN_SIZE", "FIXED_PLAIN_SHA", "FIXED_PLAIN_SIZE",
+            "FOOTER_MASK_SHA", "VBMETA_SIZE", "HASH_SIZE_OFFSET", "HASH_DIGEST_OFFSET", "FIXED_RELEASE")})
+        files["family"] = (adaptive, manifest["STOCK_RAMDISK_SHA"], manifest["STOCK_CPIO_CANONICAL_SHA"])
+    return files
 
 
 def env_file(values):
@@ -188,9 +230,43 @@ def build(download=False, selected=None):
     payload["tools/magiskboot"] = (tools / "magiskboot-arm64").read_bytes()
     payload["tools/kptools"] = kptools.read_bytes()
     payload["tools/kpimg"] = kpimg.read_bytes()
+    release = None
+    families = {}
     for target in targets:
-        for name, data in profile(target, tools, download).items():
+        kernel_path = local_path(target["kernel"]["file"])
+        if target.get("use_released_kernel") and not kernel_path.is_file() and release is None:
+            release = released_kernel(download)
+        if (release and target["id"] == release[0]["target"] and not kernel_path.is_file()
+                and not local_path(target["stock_boot"]["file"]).exists()):
+            files = release[1].copy()
+            expected = env_file({"TARGET_ID": target["id"], "TARGET_VERSION": target["lineage_version"],
+                                 "TARGET_INCREMENTAL": target["incremental"], "TARGET_SDK": target["sdk"],
+                                 "PARTITION_SIZE": target["partition_size"]})
+            if not set(expected.splitlines()) <= set(files["manifest.env"].splitlines()):
+                raise ValueError("Pinned legacy profile does not match the target definition")
+        else:
+            files = profile(target, tools, download, release if target.get("use_released_kernel") else None,
+                            family=selected is None)
+        kernel = files.pop("kernel")
+        kernel_id = sha(kernel)
+        payload[f"kernels/{kernel_id}"] = kernel
+        if "family" in files:
+            adaptive, ramdisk, cpio = files.pop("family")
+            name = target["adaptive_family"]
+            adaptive.update(TARGET_ID=name, TARGET_SDK=target["sdk"], KERNEL_ID=kernel_id)
+            pinned, raw_hashes, cpio_hashes = families.setdefault(name, (adaptive, set(), set()))
+            if pinned != adaptive:
+                raise ValueError(f"Inconsistent adaptive family: {name}")
+            raw_hashes.add(ramdisk)
+            cpio_hashes.add(cpio)
+        files["manifest.env"] += env_file({"KERNEL_ID": kernel_id})
+        for name, data in files.items():
             payload[f"profiles/{target['id']}/{name}"] = data
+    if len(families) > 1:
+        raise ValueError("Only one adaptive family is currently supported")
+    for fields, raw_hashes, cpio_hashes in families.values():
+        payload["family.env"] = env_file(dict(fields,
+            FAMILY_RAMDISKS="+".join(sorted(raw_hashes)), FAMILY_CPIOS="+".join(sorted(cpio_hashes))))
     payload["SHA256SUMS"] = "".join(
         f"{sha(data)}  {name}\n" for name, data in sorted(payload.items())).encode("ascii")
     folder = ROOT / "module/payload"
@@ -221,7 +297,8 @@ def build(download=False, selected=None):
     (dist / "compatibility.json").write_text(json.dumps({
         "minimum_lineage_major": 20,
         "device": "ursa",
-        "policy": "Exact matching profiles only; no universal/future ROM guarantee",
+        "policy": "Exact profiles or a verified kernel family; unknown images are refused",
+        "adaptive_families": list(families),
         "targets": targets,
     }, indent=2) + "\n", encoding="utf-8")
     print(result)

@@ -62,6 +62,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .states strong { color: #343d38; font-weight: 600; margin-left: 6px; }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 20px 0 0; }
 .actions p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
+#auto-on, #auto-off { grid-column: 1 / -1; }
 .notice { border-left: 3px solid #5184ac; padding: 10px 14px; background: #edf4fb; font-size: 13px; overflow-wrap: anywhere; }
 .notice[data-error="true"] { border-color: var(--danger); background: #fff0ee; }
 .device-info { margin-top: 30px; }

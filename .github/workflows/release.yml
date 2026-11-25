@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out tagged code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version=//p' module/module.prop)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$RELEASE_TAG" != "v$version" ]]; then
+            echo "::error::Tag must match module/module.prop version, for example v1.2.3."
+            exit 1
+          fi
+      - name: Reuse pinned release tools when available
+        shell: bash
+        run: |
+          python -B - <<'PY'
+          import json
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          sys.path.insert(0, 'tools')
+          from common import fetch, sha
+
+          release = json.loads(Path('config/f60-release.json').read_text(encoding='utf-8'))
+          apatch = json.loads(Path('config/apatch.json').read_text(encoding='utf-8'))
+          archive = fetch(release, Path('out/ursa-f60-magisk-v2.2.0.zip'), True)
+          tools = Path('out/tools')
+          tools.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as package:
+              for name, destination in [('kptools', 'libkptools.so'), ('kpimg', 'kpimg')]:
+                  data = package.read('payload/tools/' + name)
+                  if sha(data) == apatch[name]['sha256']:
+                      (tools / destination).write_bytes(data)
+          PY
+      - name: Build module
+        run: python -B tools/build.py --fetch
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist/ursa-f60-magisk.zip \
+            dist/ursa-f60-magisk.zip.sha256 \
+            dist/compatibility.json \
+            --verify-tag --title "$RELEASE_TAG" --generate-notes

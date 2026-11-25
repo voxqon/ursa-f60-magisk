@@ -5,6 +5,7 @@
   "incremental": "8450b6a354",
   "sdk": 35,
   "partition_size": 67108864,
+  "use_released_kernel": true,
   "stock_boot": {
     "file": "inputs/lineage-22.2-20261020-ursa/boot.img",
     "url": "https://mirrorbits.lineageos.org/full/ursa/20261020/boot.img",

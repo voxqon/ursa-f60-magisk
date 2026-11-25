@@ -49,11 +49,7 @@ f60_apatch_kernel() {
     skip="$((F60_KP_OFFSET + 224))" count=8 conv=notrunc 2>/dev/null &&
   dd if="$1/kernel.plain" of="$1/kernel.base" bs=1 \
     skip="$((F60_KP_OFFSET + 88))" seek=16 count=8 conv=notrunc 2>/dev/null || return 1
-  case "$(f60_hash "$1/kernel.base")" in
-    "$STOCK_PLAIN_SHA") F60_KERNEL_STATE=stock ;;
-    "$FIXED_PLAIN_SHA") F60_KERNEL_STATE=fixed ;;
-    *) f60_error "Unknown base kernel under KernelPatch."; return 1 ;;
-  esac
+  f60_classify_base "$1" || return 1
   "$F60_KP" -p -i "$1/kernel.base" -k "$F60_PAYLOAD_ROOT/tools/kpimg" \
     -S f60-validation-placeholder -o "$1/kernel.expected" > "$1/kptools.log" 2>&1 ||
     { f60_error "KernelPatch reconstruction failed."; return 1; }
@@ -68,7 +64,7 @@ f60_apatch_kernel() {
 
 f60_apatch_rebase() (
   before=$1
-  "$F60_MB" decompress "$F60_PAYLOAD/kernel" "$before/fixed.base" &&
+  "$F60_MB" decompress "$F60_FIXED_KERNEL" "$before/fixed.base" &&
   [ "$(f60_hash "$before/fixed.base")" = "$FIXED_PLAIN_SHA" ] || exit 1
   "$F60_KP" -p -i "$before/fixed.base" -k "$F60_PAYLOAD_ROOT/tools/kpimg" \
     -S f60-validation-placeholder -o "$before/fixed.patched" > "$before/rebase.log" 2>&1 ||
